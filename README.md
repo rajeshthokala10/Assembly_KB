@@ -31,33 +31,50 @@ data/sample_docs/            # The bundled knowledge base (AP/UP, EN/TE/HI)
 .github/workflows/reseed.yml # On-demand reseed (manual workflow_dispatch)
 ```
 
-## ⚠️ Shared contract with the query app
+## How this repo and the query app fit together
 
-These MUST match the query/API app exactly, or retrieval silently breaks:
+This repo (**Assembly_KB**) and the query app (**Assembly-Assistant**) never call
+each other. They communicate **only through the Qdrant collection** — this repo
+*writes* vectors + access labels; the query app *reads* and *enforces* them:
 
-| Setting | Must equal the query side |
+```
+  Assembly_KB  (write / ingest)                 Assembly-Assistant  (read / serve)
+  ─────────────────────────────                 ──────────────────────────────────
+  PDF → OCR → chunk → embed                       user query → embed
+      → stamp payload labels   ──▶   Qdrant   ◀── → RBAC filter on those labels
+        (security_level,                            (auth/rbac.build_qdrant_filter)
+         allowed_roles, state)
+```
+
+Because there is no API between them, a handful of values form a **contract**
+both sides must agree on. A mismatch fails silently — no error, just wrong or
+missing results — so the contract is documented and CI-checked.
+
+### Retrieval contract — must be identical on both sides
+
+| Setting | Source of truth (here) |
 |---|---|
-| `EMBEDDING_MODEL` / `EMBEDDING_DIM` | same model + dimensions |
-| Qdrant collection name + vector/index schema (`qdrant_store.py`) | identical |
-| `INDIC_NORMALIZE` and chunking params | identical |
+| `EMBEDDING_MODEL` / `EMBEDDING_DIM` | `config.py` — the query must embed with the same model/dims |
+| Qdrant collection name + vector/index schema | `qdrant_store.py` |
+| `INDIC_NORMALIZE` + chunking params | `config.py` (applied symmetrically at query time) |
 
-Treat `config.py` + `qdrant_store.py` as the source of truth; keep them in sync
-with the query app (ideally extract a shared package later).
+### RBAC contract — security-sensitive
 
-### RBAC contract (security-sensitive)
+The access vocabulary lives in **`app/ingestion/metadata.py`** (`SECURITY_LEVELS`,
+`ROLES`, `security_for()`); the query app's **`app/auth/rbac.py`** filters on these
+exact values. **`tests/test_rbac_contract.py`** freezes them, so CI fails if the
+labels here drift from what the query app enforces.
 
-This repo *writes* the access-control labels; the query app *enforces* them. They
-talk only through the Qdrant payload, so the field names **and** value vocabulary
-must match exactly — a mismatch silently leaks or over-restricts documents.
-
-| Payload field | Written here (`seed_corpus._security` + models) | Read by query app (`auth/rbac.build_qdrant_filter`) |
+| Payload field | Written here (`metadata.security_for` + models) | Read by query app (`auth/rbac`) |
 |---|---|---|
 | `security_level` | `PUBLIC` / `RESTRICTED` / `CONFIDENTIAL` | filters to the user's allowed levels |
 | `allowed_roles`  | `SPEAKER` / `MLA` / `MEDIA` / `PUBLIC`   | requires the user's role to be present |
 | `state` / `allowed_states` | `AP` / `UP` / `ALL`            | scopes non-privileged roles to their state |
 
-If you change the security tiers, role vocabulary, or these field names here,
-update `app/auth/rbac.py` in the query app in lockstep.
+Filename → labels (in `metadata.security_for`): `confidential` → CONFIDENTIAL
+(SPEAKER only); `committee` → RESTRICTED (SPEAKER + MLA); everything else →
+PUBLIC. **Change a tier, role, or field name here → update `app/auth/rbac.py` in
+the query app in lockstep** (the contract test will flag the drift).
 
 ## Running the seed
 
