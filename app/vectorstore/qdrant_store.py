@@ -56,7 +56,11 @@ class QdrantStore:
         self._create_payload_indices()
 
     def _create_payload_indices(self) -> None:
-        for field in ("state", "language", "category", "security_level", "chunk_type", "document_id"):
+        # source_path/content_hash power delta detection (skip/update/insert).
+        for field in (
+            "state", "language", "category", "security_level", "chunk_type",
+            "document_id", "source_path", "content_hash",
+        ):
             self.client.create_payload_index(
                 collection_name=self.collection,
                 field_name=field,
@@ -68,6 +72,40 @@ class QdrantStore:
                 field_name=field,
                 field_schema=models.PayloadSchemaType.KEYWORD,
             )
+
+    # ── Delta ingestion helpers ─────────────────────────────────────────────
+    def document_content_hash(self, document_id: str) -> str | None:
+        """Return the stored content_hash for a document, or None if absent.
+
+        One indexed point-lookup — the basis for skip/update/insert decisions.
+        """
+        if not self.client.collection_exists(self.collection):
+            return None
+        points, _ = self.client.scroll(
+            collection_name=self.collection,
+            scroll_filter=models.Filter(
+                must=[models.FieldCondition(key="document_id", match=models.MatchValue(value=document_id))]
+            ),
+            limit=1,
+            with_payload=["content_hash"],
+            with_vectors=False,
+        )
+        if not points:
+            return None
+        return (points[0].payload or {}).get("content_hash")
+
+    def delete_document(self, document_id: str) -> None:
+        """Remove all chunks of a document (used before re-ingesting a change)."""
+        if not self.client.collection_exists(self.collection):
+            return
+        self.client.delete(
+            collection_name=self.collection,
+            points_selector=models.FilterSelector(
+                filter=models.Filter(
+                    must=[models.FieldCondition(key="document_id", match=models.MatchValue(value=document_id))]
+                )
+            ),
+        )
 
     async def upsert_chunks(
         self,

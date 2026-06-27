@@ -29,6 +29,10 @@ class DocumentMetadata(BaseModel):
     title: str = ""
     year: int | None = None
     source_pages: int = 0
+    # Delta tracking: logical path identifying the document across rebuilds, and
+    # the SHA-256 of its bytes identifying the current version.
+    source_path: str = ""
+    content_hash: str = ""
 
 
 class ChunkRecord(BaseModel):
@@ -47,6 +51,9 @@ class ChunkRecord(BaseModel):
     allowed_roles: list[str]
     allowed_states: list[str]
     page_number: int | None = None
+    # Carried into the Qdrant payload so delta checks can read them back.
+    source_path: str = ""
+    content_hash: str = ""
 
 
 class IngestRequest(BaseModel):

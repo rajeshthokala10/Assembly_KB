@@ -84,21 +84,9 @@ async def main(reset: bool, force: bool) -> None:
     store = QdrantStore()
     if reset:
         print(f"Recreating collection '{store.collection}'…")
-        store.client.delete_collection(store.collection)
+        if store.client.collection_exists(store.collection):
+            store.client.delete_collection(store.collection)
     store.ensure_collection()
-
-    # Idempotent by default: if the collection already holds vectors, skip the
-    # seed so re-running it (e.g. after every deploy) doesn't re-embed the whole
-    # corpus — that's slow and duplicates points. Use --reset to rebuild from
-    # scratch, or --force to ingest on top of existing data.
-    if not reset and not force:
-        existing = store.client.count(collection_name=store.collection, exact=True).count
-        if existing > 0:
-            print(
-                f"Collection '{store.collection}' already has {existing} points — "
-                "skipping seed. Use --reset to rebuild or --force to add anyway."
-            )
-            return
 
     if not SAMPLE_ROOT.is_dir():
         sys.exit(f"Sample docs not found at {SAMPLE_ROOT}")
@@ -108,26 +96,33 @@ async def main(reset: bool, force: bool) -> None:
     if not pdfs:
         sys.exit(f"No PDFs under {SAMPLE_ROOT}")
 
-    print(f"Seeding {len(pdfs)} documents into '{store.collection}'…\n")
-    print(f"{'FILE':<48} {'STATE':<5} {'LANG':<4} {'SECURITY':<12} {'CATEGORY'}")
+    # Incremental by default: each document is hashed and only (re)embedded if
+    # new or changed. --reset rebuilds from scratch; --force re-ingests all.
+    mode = "full rebuild" if reset else ("forced re-ingest" if force else "incremental (delta)")
+    print(f"Seeding {len(pdfs)} documents into '{store.collection}'  [{mode}]…\n")
+    print(f"{'FILE':<48} {'STATE':<5} {'LANG':<4} {'STATUS':<9} {'CHUNKS'}")
     print("-" * 100)
 
+    tally = {"inserted": 0, "updated": 0, "skipped": 0}
     for pdf in pdfs:
         state = pdf.parent.name.upper()
         req = _request_for(pdf, state)
-        print(f"{pdf.name:<48} {req.state:<5} {req.language:<4} {req.security_level:<12} {req.category.value}")
-        resp = await pipeline.ingest_file(pdf, req)
-        print(
-            f"    -> {resp.total_parent_chunks} parents, "
-            f"{resp.total_child_chunks} children  ({resp.document_id[:8]})"
-        )
+        # state/filename uniquely identifies the document across rebuilds.
+        source = f"{pdf.parent.name}/{pdf.name}"
+        resp = await pipeline.ingest_file(pdf, req, source_path=source, force=force)
+        tally[resp.status] = tally.get(resp.status, 0) + 1
+        chunks = f"{resp.total_parent_chunks}p/{resp.total_child_chunks}c" if resp.status != "skipped" else "—"
+        print(f"{pdf.name:<48} {req.state:<5} {req.language:<4} {resp.status:<9} {chunks}")
 
-    print("\nDone. Corpus seeded.")
+    print(
+        f"\nDone. inserted={tally['inserted']}  updated={tally['updated']}  "
+        f"skipped={tally['skipped']}  (total {len(pdfs)})"
+    )
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--reset", action="store_true", help="delete & recreate the collection before seeding")
-    ap.add_argument("--force", action="store_true", help="seed even if the collection already has data")
+    ap.add_argument("--reset", action="store_true", help="delete & recreate the collection, then ingest everything")
+    ap.add_argument("--force", action="store_true", help="re-ingest every document even if unchanged")
     args = ap.parse_args()
     asyncio.run(main(args.reset, args.force))

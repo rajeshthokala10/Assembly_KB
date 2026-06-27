@@ -115,5 +115,7 @@ class HierarchicalChunker:
             allowed_roles=meta.allowed_roles,
             allowed_states=meta.allowed_states,
             page_number=page_number,
+            source_path=meta.source_path,
+            content_hash=meta.content_hash,
             **kwargs,
         )
