@@ -24,7 +24,7 @@ app/
 
 scripts/
 ├── init_qdrant.py           # Create the collection + payload indices
-├── seed_corpus.py           # Seed data/sample_docs/ (idempotent; --reset / --force)
+├── seed_corpus.py           # Seed data/sample_docs/ (incremental delta; --force / --reset)
 └── generate_sample_docs.py  # Regenerate the bundled sample PDFs
 
 data/sample_docs/            # The bundled knowledge base (AP/UP, EN/TE/HI)
@@ -44,18 +44,77 @@ These MUST match the query/API app exactly, or retrieval silently breaks:
 Treat `config.py` + `qdrant_store.py` as the source of truth; keep them in sync
 with the query app (ideally extract a shared package later).
 
-## Usage
+## Running the seed
+
+### 1. Prerequisites
+
+OCR system tools the pipeline shells out to:
 
 ```bash
-cp .env.example .env          # set QDRANT_URL, QDRANT_API_KEY, etc.
-pip install -r requirements.txt
-python scripts/init_qdrant.py         # ensure collection exists
-python scripts/seed_corpus.py         # incremental: only new/changed docs
-python scripts/seed_corpus.py --force # re-ingest every document
-python scripts/seed_corpus.py --reset # wipe + rebuild from scratch
+# macOS
+brew install tesseract tesseract-lang poppler
+# Debian / Ubuntu
+sudo apt-get install -y tesseract-ocr tesseract-ocr-tel tesseract-ocr-hin \
+                        tesseract-ocr-eng poppler-utils
 ```
 
-Or via Docker / the `reseed.yml` workflow (needs `QDRANT_URL` + `QDRANT_API_KEY`).
+Python deps + a configured `.env`:
+
+```bash
+pip install -r requirements.txt
+cp .env.example .env      # then set QDRANT_URL + QDRANT_API_KEY (use rotated keys!)
+```
+
+- `EMBEDDING_MODEL` / `EMBEDDING_DIM` / `QDRANT_COLLECTION` **must match the query app**.
+- Have **~4 GB RAM free** — the first run downloads BGE-M3 (~2.3 GB) into memory.
+
+### 2. Seed it
+
+```bash
+python scripts/init_qdrant.py          # create collection + indices (one-time, idempotent)
+
+python scripts/seed_corpus.py          # incremental (default): only new/changed docs
+python scripts/seed_corpus.py --force  # re-ingest every document
+python scripts/seed_corpus.py --reset  # wipe the collection, then rebuild from scratch
+```
+
+The default is **incremental** — re-running ingests only new or modified files
+(see [Incremental ingestion](#incremental-ingestion-delta-updates)). Each run
+ends with a tally: `inserted=… updated=… skipped=…`.
+
+> First run after switching to the hash-based identity scheme: run once with
+> `--reset` so older points (random ids, no content hash) are rebuilt cleanly.
+> Every run after that is true delta.
+
+### 3. Add a document to the corpus
+
+Drop the PDF under `data/sample_docs/<STATE>/` with a language suffix, then re-seed:
+
+```
+data/sample_docs/AP/AP_<Title>_<DD.MM.YYYY>_TE.pdf     #  _TE Telugu · _HI Hindi · _EN English
+```
+
+The filename drives the metadata: the folder → state (`AP`/`UP`), the
+`_TE`/`_HI`/`_EN` suffix → language (so Indic PDFs get the right OCR model), and
+keywords (`confidential`, `committee`, `bill`, `gazette`, …) → security level +
+category. Then `python scripts/seed_corpus.py` ingests just the new file.
+
+### 4. Run in Docker
+
+```bash
+docker build -t assembly-kb-ingest .
+# init + incremental seed (the image's default command)
+docker run --rm --env-file .env assembly-kb-ingest
+# full rebuild
+docker run --rm --env-file .env assembly-kb-ingest \
+  sh -c "python scripts/init_qdrant.py && python scripts/seed_corpus.py --reset"
+```
+
+### 5. Run via GitHub Actions (no local setup)
+
+Add repo secrets `QDRANT_URL` + `QDRANT_API_KEY`, then **Actions → "Reseed Qdrant
+corpus" → Run workflow** (`reset: true`, `confirm: RESEED`). It runs on a CI
+runner, so no local RAM or OCR install is needed.
 
 ## Incremental ingestion (delta updates)
 
