@@ -1,0 +1,17 @@
+# Railway config for the ingestion / seeding service.
+#
+# This is a BATCH job, not a web service: it ensures the Qdrant collection
+# exists, seeds the corpus (idempotent — no-op if already populated), then
+# EXITS. restartPolicyType = NEVER stops Railway from restart-looping a
+# container that is supposed to run once and finish.
+#
+# For a full rebuild, override the start command in the Railway UI to:
+#   python scripts/init_qdrant.py && python scripts/seed_corpus.py --reset
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "python scripts/init_qdrant.py && python scripts/seed_corpus.py"
+restartPolicyType = "NEVER"
