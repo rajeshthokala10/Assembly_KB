@@ -1,0 +1,74 @@
+name: Reseed Qdrant corpus
+
+# One-click, on-demand full reseed of the Qdrant Cloud collection from
+# data/sample_docs/. Deliberately NOT tied to build/deploy — idempotent seeding
+# (the default) handles normal deploys; run THIS when the corpus itself changes
+# (new/fixed documents, enabling Indic normalization, switching embedder).
+on:
+  workflow_dispatch:
+    inputs:
+      reset:
+        description: "Wipe & rebuild the collection (true) vs add missing only (false)"
+        type: boolean
+        default: true
+      confirm:
+        description: "Type RESEED to confirm — guards against accidental wipes"
+        required: true
+        type: string
+
+concurrency:
+  group: reseed
+  cancel-in-progress: false
+
+jobs:
+  reseed:
+    name: Reset & seed the corpus
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require explicit confirmation
+        run: |
+          if [ "${{ inputs.confirm }}" != "RESEED" ]; then
+            echo "::error::Confirmation failed — type RESEED in the input to proceed."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      # The seed runs the real ingestion pipeline (OCR), so the runner needs the
+      # same Tesseract language packs + Poppler as the Docker image.
+      - name: Install OCR system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            tesseract-ocr tesseract-ocr-tel tesseract-ocr-hin tesseract-ocr-eng poppler-utils
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Initialize collection + seed corpus
+        env:
+          QDRANT_URL: ${{ secrets.QDRANT_URL }}
+          QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
+          QDRANT_COLLECTION: ${{ vars.QDRANT_COLLECTION || 'assembly_kb' }}
+          EMBEDDING_MODEL: ${{ vars.EMBEDDING_MODEL || 'BAAI/bge-m3' }}
+          EMBEDDING_DIM: ${{ vars.EMBEDDING_DIM || '1024' }}
+          INDIC_NORMALIZE: "true"
+        run: |
+          set -euo pipefail
+          if [ -z "${QDRANT_URL:-}" ] || [ -z "${QDRANT_API_KEY:-}" ]; then
+            echo "::error::QDRANT_URL / QDRANT_API_KEY secrets are not set"
+            exit 1
+          fi
+          python scripts/init_qdrant.py
+          if [ "${{ inputs.reset }}" = "true" ]; then
+            echo "Full reset reseed…"
+            python scripts/seed_corpus.py --reset
+          else
+            echo "Idempotent seed (skips if already populated)…"
+            python scripts/seed_corpus.py
+          fi

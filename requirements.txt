@@ -1,0 +1,11 @@
+# Ingestion / knowledge-base service — no web (FastAPI/Streamlit) or LLM deps.
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+qdrant-client>=1.7.0
+sentence-transformers>=2.2.0
+pytesseract>=0.3.10
+pdf2image>=1.16.3
+pypdf>=3.17.0
+Pillow>=10.0.0
+numpy>=1.24.0
+fpdf2>=2.7.0  # used only by scripts/generate_sample_docs.py
