@@ -44,6 +44,21 @@ These MUST match the query/API app exactly, or retrieval silently breaks:
 Treat `config.py` + `qdrant_store.py` as the source of truth; keep them in sync
 with the query app (ideally extract a shared package later).
 
+### RBAC contract (security-sensitive)
+
+This repo *writes* the access-control labels; the query app *enforces* them. They
+talk only through the Qdrant payload, so the field names **and** value vocabulary
+must match exactly — a mismatch silently leaks or over-restricts documents.
+
+| Payload field | Written here (`seed_corpus._security` + models) | Read by query app (`auth/rbac.build_qdrant_filter`) |
+|---|---|---|
+| `security_level` | `PUBLIC` / `RESTRICTED` / `CONFIDENTIAL` | filters to the user's allowed levels |
+| `allowed_roles`  | `SPEAKER` / `MLA` / `MEDIA` / `PUBLIC`   | requires the user's role to be present |
+| `state` / `allowed_states` | `AP` / `UP` / `ALL`            | scopes non-privileged roles to their state |
+
+If you change the security tiers, role vocabulary, or these field names here,
+update `app/auth/rbac.py` in the query app in lockstep.
+
 ## Running the seed
 
 ### 1. Prerequisites
