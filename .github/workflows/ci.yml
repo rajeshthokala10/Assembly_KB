@@ -1,0 +1,37 @@
+name: Validate ingest
+
+# Fast self-check: syntax across the whole tree + a dependency-light import of
+# the core modules (config / models / normalization). The heavy ML deps
+# (torch, sentence-transformers) are exercised by the reseed workflow, not here.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Syntax check (compile all sources)
+        run: python -m compileall -q app scripts
+
+      - name: Import core modules (no heavy ML deps)
+        run: |
+          pip install "pydantic>=2.5.0" "pydantic-settings>=2.1.0"
+          python - <<'PY'
+          import sys; sys.path.insert(0, ".")
+          from app.config import settings
+          from app.models.document import IngestRequest, DocumentMetadata
+          from app.ingestion.text_normalize import normalize_indic
+          assert settings.embedding_model and settings.embedding_dim
+          assert normalize_indic("  విద్య   పై  ") == "విద్య పై"
+          print("core OK:", settings.embedding_model, settings.embedding_dim)
+          PY
