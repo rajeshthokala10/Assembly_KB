@@ -1,42 +1,43 @@
 name: Reseed Qdrant corpus
 
-# One-click, on-demand full reseed of the Qdrant Cloud collection from
-# data/sample_docs/. Deliberately NOT tied to build/deploy — idempotent seeding
-# (the default) handles normal deploys; run THIS when the corpus itself changes
-# (new/fixed documents, enabling Indic normalization, switching embedder).
+# End-to-end seeding job: provisions the environment (OCR system deps, Python,
+# dependencies, cached embedding model) and runs the seed against Qdrant Cloud.
+# Manual only — normal deploys don't reseed; run this when the corpus changes.
 on:
   workflow_dispatch:
     inputs:
-      reset:
-        description: "Wipe & rebuild the collection (true) vs add missing only (false)"
-        type: boolean
-        default: true
+      mode:
+        description: "Seeding mode"
+        type: choice
+        options: [incremental, force, reset]
+        default: incremental
       confirm:
-        description: "Type RESEED to confirm — guards against accidental wipes"
-        required: true
+        description: "Required ONLY for 'reset' — type RESEED to confirm the wipe"
+        required: false
         type: string
 
 concurrency:
-  group: reseed
+  group: seed-qdrant          # never run two seeds against the cluster at once
   cancel-in-progress: false
 
 jobs:
-  reseed:
-    name: Reset & seed the corpus
+  seed:
+    name: Seed corpus
     runs-on: ubuntu-latest
     steps:
-      - name: Require explicit confirmation
+      # 'reset' wipes the collection — gate it behind an explicit confirmation.
+      - name: Guard destructive reset
+        if: ${{ inputs.mode == 'reset' }}
         run: |
           if [ "${{ inputs.confirm }}" != "RESEED" ]; then
-            echo "::error::Confirmation failed — type RESEED in the input to proceed."
+            echo "::error::reset wipes the collection — type RESEED in 'confirm' to proceed."
             exit 1
           fi
 
       - uses: actions/checkout@v4
 
-      # The seed runs the real ingestion pipeline (OCR), so the runner needs the
-      # same Tesseract language packs + Poppler as the Docker image.
-      - name: Install OCR system deps
+      # ── Environment ──────────────────────────────────────────────────────
+      - name: Install OCR system deps (Tesseract + Poppler)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -50,6 +51,14 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
+      # Cache the embedding model (~2.3 GB) so reruns skip the HuggingFace download.
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ vars.EMBEDDING_MODEL || 'BAAI/bge-m3' }}
+
+      # ── Run the seed job ─────────────────────────────────────────────────
       - name: Initialize collection + seed corpus
         env:
           QDRANT_URL: ${{ secrets.QDRANT_URL }}
@@ -58,17 +67,31 @@ jobs:
           EMBEDDING_MODEL: ${{ vars.EMBEDDING_MODEL || 'BAAI/bge-m3' }}
           EMBEDDING_DIM: ${{ vars.EMBEDDING_DIM || '1024' }}
           INDIC_NORMALIZE: "true"
+          MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
           if [ -z "${QDRANT_URL:-}" ] || [ -z "${QDRANT_API_KEY:-}" ]; then
             echo "::error::QDRANT_URL / QDRANT_API_KEY secrets are not set"
             exit 1
           fi
+
           python scripts/init_qdrant.py
-          if [ "${{ inputs.reset }}" = "true" ]; then
-            echo "Full reset reseed…"
-            python scripts/seed_corpus.py --reset
-          else
-            echo "Idempotent seed (skips if already populated)…"
-            python scripts/seed_corpus.py
-          fi
+
+          case "$MODE" in
+            reset) FLAG="--reset" ;;
+            force) FLAG="--force" ;;
+            *)     FLAG="" ;;        # incremental (delta)
+          esac
+          echo "Seeding in '$MODE' mode…"
+          python scripts/seed_corpus.py $FLAG | tee seed.log
+
+      - name: Publish summary
+        if: always()
+        run: |
+          {
+            echo "### Seed result — mode: \`${{ inputs.mode }}\`"
+            echo ''
+            echo '```'
+            tail -n 25 seed.log 2>/dev/null || echo "(no output captured)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

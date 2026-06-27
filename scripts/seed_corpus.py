@@ -20,60 +20,21 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.ingestion.metadata import category_for, language_for, security_for
 from app.ingestion.pipeline import IngestionPipeline
-from app.models.document import DocumentCategory, IngestRequest
+from app.models.document import IngestRequest
 from app.vectorstore.qdrant_store import QdrantStore
 
 SAMPLE_ROOT = Path(__file__).resolve().parent.parent / "data" / "sample_docs"
 
-ALL_ROLES = ["SPEAKER", "MLA", "MEDIA", "PUBLIC"]
-
-
-def _language(name: str) -> str:
-    upper = name.upper()
-    if "_TE" in upper:
-        return "te"
-    if "_HI" in upper:
-        return "hi"
-    return "en"
-
-
-def _category(name: str) -> DocumentCategory:
-    n = name.lower()
-    if "appropriation" in n or "_bill" in n or "bill_" in n:
-        return DocumentCategory.BILL
-    if "_act" in n or "act_" in n or "policy_act" in n:
-        return DocumentCategory.ACT
-    if "debate" in n:
-        return DocumentCategory.DEBATE_TRANSCRIPT
-    if "committee" in n or "report" in n or "assessment" in n:
-        return DocumentCategory.COMMITTEE_REPORT
-    if "press_release" in n:
-        return DocumentCategory.PRESS_RELEASE
-    if "gazette" in n:
-        return DocumentCategory.GAZETTE_NOTIFICATION
-    if "_qa" in n or "question" in n:
-        return DocumentCategory.QUESTION_ANSWER
-    return DocumentCategory.GENERAL
-
-
-def _security(name: str) -> tuple[str, list[str]]:
-    """Return (security_level, allowed_roles) inferred from the filename."""
-    n = name.lower()
-    if "confidential" in n:
-        return "CONFIDENTIAL", ["SPEAKER"]
-    if "committee" in n:
-        return "RESTRICTED", ["SPEAKER", "MLA"]
-    return "PUBLIC", list(ALL_ROLES)
-
 
 def _request_for(pdf: Path, state: str) -> IngestRequest:
-    level, roles = _security(pdf.name)
+    level, roles = security_for(pdf.name)
     return IngestRequest(
         path=str(pdf),
         state=state,
-        language=_language(pdf.name),
-        category=_category(pdf.name),
+        language=language_for(pdf.name),
+        category=category_for(pdf.name),
         security_level=level,
         allowed_roles=roles,
         allowed_states=[state],

@@ -35,3 +35,6 @@ jobs:
           assert normalize_indic("  విద్య   పై  ") == "విద్య పై"
           print("core OK:", settings.embedding_model, settings.embedding_dim)
           PY
+
+      - name: RBAC contract test
+        run: python tests/test_rbac_contract.py
